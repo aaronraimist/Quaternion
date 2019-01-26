@@ -4,7 +4,7 @@ project(quaternion CXX)
 
 set(APP_NAME "quaternion")
 set(IDENTIFIER "com.github.quaternion")
-set(VERSION "0.0.9.4")
+set(VERSION "0.0.9.3")
 set(COPYRIGHT "Copyright © 2018-2019 QMatrixClient Project")
 
 if(UNIX AND NOT APPLE)
