@@ -1,4 +1,5 @@
 language: cpp
+dist: xenial
 
 git:
   depth: false
@@ -10,39 +11,104 @@ cache:
   directories:
     - $HOME/Library/Caches/Homebrew
 
-addons:
-  apt:
-    sources:
-    - ubuntu-toolchain-r-test
-    - sourceline: 'ppa:beineri/opt-qt563-trusty'
-    packages:
-    - g++-5
-    - qt56-meta-minimal
-    - qt56tools
-
 matrix:
   include:
   - os: linux
     compiler: gcc
-    env: [ 'ENV_EVAL="CC=gcc-5 && CXX=g++-5"' ]
+    addons:
+      apt:
+        sources:
+        - sourceline: 'ppa:beineri/opt-qt571-xenial'
+        packages:
+        - mesa-common-dev # Forgotten dep of qt57base
+        - qt57base
+        - qt57imageformats
+        - qt57svg
+        - qt57multimedia
+        - qt57quickcontrols
+        - qt57quickcontrols2
+        - qt57tools
+  - os: linux
+    dist: trusty
+    compiler: clang
+    env: [ 'VERSION_SUFFIX="-compat"' ]
+    addons:
+      apt:
+        sources:
+        - ubuntu-toolchain-r-test
+        - sourceline: 'ppa:beineri/opt-qt571-trusty'
+        packages:
+        - libstdc++-5-dev
+        - qt57base
+        - qt57imageformats
+        - qt57svg
+        - qt57multimedia
+        - qt57quickcontrols
+        - qt57quickcontrols2
+        - qt57tools
   - os: linux
     compiler: clang
+    addons:
+      apt:
+        sources:
+        - sourceline: 'ppa:beineri/opt-qt-5.12.0-xenial'
+        packages:
+        - mesa-common-dev # Forgotten dep of qt512base
+        - qt512base
+        - qt512imageformats
+        - qt512svg
+        - qt512multimedia
+        - qt512quickcontrols
+        - qt512quickcontrols2
+        - qt512tools
+        - qt512translations
   - os: osx
-    env: [ 'ENV_EVAL="brew update && brew install qt5 && PATH=/usr/local/opt/qt/bin:$PATH"' ]
+    env: [ 'PATH=/usr/local/opt/qt/bin:$PATH"' ]
+    addons:
+      homebrew:
+        packages:
+        - qt5
 
-before_install:
+before_script:
 - eval "${ENV_EVAL}"
-- if [ "$TRAVIS_OS_NAME" = "linux" ]; then . /opt/qt56/bin/qt56-env.sh; fi
+- if [ -f /opt/qt57/bin/qt57-env.sh ]; then . /opt/qt57/bin/qt57-env.sh; fi
+- if [ -f /opt/qt512/bin/qt512-env.sh ]; then . /opt/qt512/bin/qt512-env.sh; fi
+- export VERSION=$(git rev-list --count HEAD) # also used by linuxdeployqt
 
 script:
-- mkdir build && cd build
-- cmake .. -DUSE_INTREE_LIBQMC=1 # TODO: add building with an external lib
-- cmake --build . --target all
+- mkdir build && pushd build
+# TODO: add building with an external lib
+- cmake .. -LA -DUSE_INTREE_LIBQMC=1 -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_PREFIX=/usr -DDEPLOY_VERBOSITY=$DEPLOY_VERBOSITY
 #- appstream-util validate linux/*.appdata.xml
+- cmake --build . --target all
+- export DESTDIR=$TRAVIS_BUILD_DIR/install
+- if [ "$TRAVIS_OS_NAME" = "linux" ]; then cmake --build . --target install; fi
+- if [ "$TRAVIS_OS_NAME" = "osx" ]; then cmake --build . --target image; fi
+- popd
+# TODO: maybe move AppImage generation to CMakeLists.txt
+# (pre-wgetting AppImageKit to avoid CMakeList.txt dependency on Internet?)
+# FIXME: The AppImageKit downloadables should at the very least be verified
+- |
+  if [ "$TRAVIS_OS_NAME" = "linux" ] && [ "$CC" = "clang" ]; then
+    mkdir AppImageKit && pushd AppImageKit
+      wget -c -nv \
+        "https://github.com/probonopd/linuxdeployqt/releases/download/continuous/linuxdeployqt-continuous-x86_64.AppImage" \
+        "https://github.com/darealshinji/AppImageKit-checkrt/releases/download/continuous/exec-x86_64.so" \
+        "https://github.com/darealshinji/AppImageKit-checkrt/releases/download/continuous/AppRun-patched-x86_64"
+      chmod a+x ./linuxdeployqt-continuous-x86_64.AppImage
+      install -m "u=rw,go=r" -t $DESTDIR/usr/optional/libstdc++ /usr/lib/x86_64-linux-gnu/libstdc++.so.6
+      install -m "u=rw,go=r" ./exec*.so $DESTDIR/usr/optional/exec.so
+      install -m "u=rwx,go=rx" ./AppRun* $DESTDIR/AppRun
+      unset QTDIR QT_PLUGIN_PATH LD_LIBRARY_PATH
+      ./linuxdeployqt-continuous-x86_64.AppImage \
+        $DESTDIR/usr/share/applications/*.desktop -appimage -extra-plugins=iconengines,platformthemes/libqgtk3.so -qmldir=$TRAVIS_BUILD_DIR/client/qml -verbose=$DEPLOY_VERBOSITY
+      export APPIMAGE_READY=1
+    popd
+  fi
 
-before_deploy:
-- cd $TRAVIS_BUILD_DIR
-- sed -i -e "s/VERSION_VALUE/$(git rev-list --count HEAD)/g" .ci/bintray-release.json
+after_success:
+- sed -i -e "s/VERSION_VALUE/git-$VERSION/g" .ci/bintray-release.json
+- sed -i -e "s/VERSION_SUFFIX/$VERSION_SUFFIX/g" .ci/bintray-release.json
 - sed -i -e "s/BINTRAY_SUBJECT/$BINTRAY_SUBJECT/g" .ci/bintray-release.json
 - sed -i -e "s/BINTRAY_REPO/$BINTRAY_REPO/g" .ci/bintray-release.json
 - sed -i -e "s/BINTRAY_NAME/$BINTRAY_NAME/g" .ci/bintray-release.json
@@ -54,13 +120,21 @@ deploy:
   key: $BINTRAY_TOKEN
   skip_cleanup: true
   on:
-    all_branches: true
+    tags: false
 
 - provider: releases
   api_key: $GITHUB_API_KEY
   file: build/quaternion.dmg
   skip_cleanup: true
   on:
+    tags: true
+
+- provider: releases
+  api_key: $GITHUB_API_KEY
+  file: AppImageKit/Quaternion*.AppImage
+  skip_cleanup: true
+  on:
+    condition: -n "$RELEASE_APPIMAGE"
     tags: true
 
 notifications:
